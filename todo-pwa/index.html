@@ -115,7 +115,11 @@ li.done{opacity:.7}
 .icon:hover:not(:disabled){background:var(--bg);color:var(--ink)}
 .icon.del:hover{color:var(--danger)}
 .icon:disabled{opacity:.25;cursor:default}
-.icon.mv{border:1px solid var(--line);font-size:15px}
+.handle{flex:none;width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:24px;font-weight:700;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;border-radius:8px}
+.handle:hover{background:var(--bg);color:var(--ink)}
+.handle:active{cursor:grabbing}
+.reorder li{user-select:none;-webkit-user-select:none}
+li.dragging{position:relative;z-index:10;box-shadow:0 10px 28px rgba(0,0,0,.28);border-color:var(--bar);opacity:1;transition:none}
 li.edit{padding:8px;flex-wrap:wrap}
 li.edit input[type=text]{flex:1 1 100%}
 li.edit select{flex:1}
@@ -159,6 +163,8 @@ li.edit select{flex:1}
     <button class="tool" id="orderToggle" aria-pressed="false">↕ 순서 변경</button>
   </div>
 
+  <p class="hint" id="orderHint" hidden style="margin:0 0 10px">≡ 를 잡고 위아래로 끌어서 순서를 바꿔요.</p>
+
   <section class="panel" id="catPanel" hidden>
     <h2>나만의 분류 추가</h2>
     <div class="row">
@@ -197,7 +203,7 @@ li.edit select{flex:1}
   var lastDeleted = null;
   var toastTimer = null;
   var storageOk = true;
-  var focusMv = null;
+  var focusH = null;
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -301,7 +307,7 @@ li.edit select{flex:1}
     if (i < 0 || j < 0 || j >= s.length || s[j].done !== s[i].done) return;
     var a = todos.indexOf(s[i]), b = todos.indexOf(s[j]);
     var tmp = todos[a]; todos[a] = todos[b]; todos[b] = tmp;
-    focusMv = id + ':' + dir;
+    focusH = id;
     save(); render();
   }
 
@@ -396,6 +402,61 @@ li.edit select{flex:1}
     });
   }
 
+  function commitOrder(ids) {
+    var shownSet = getShown();
+    [false, true].forEach(function (d) {
+      var slots = [];
+      todos.forEach(function (t, i) { if (shownSet.indexOf(t) >= 0 && t.done === d) slots.push(i); });
+      var items = ids.map(function (id) { return todos.filter(function (t) { return t.id === id; })[0]; })
+        .filter(function (t) { return t && t.done === d; });
+      if (items.length !== slots.length) return;
+      slots.forEach(function (s, k) { todos[s] = items[k]; });
+    });
+    save(); render();
+  }
+
+  function startDrag(e, li) {
+    if (e.button > 0) return;
+    e.preventDefault();
+    var handle = e.currentTarget;
+    var ul = li.parentNode;
+    var startY = e.clientY;
+    li.classList.add('dragging');
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+
+    function sib(next) {
+      var s = next ? li.nextElementSibling : li.previousElementSibling;
+      return s && s.getAttribute('data-done') === li.getAttribute('data-done') ? s : null;
+    }
+    function center(n) { var r = n.getBoundingClientRect(); return r.top + r.height / 2; }
+    function swap(op, y) {
+      var before = li.getBoundingClientRect().top;
+      op();
+      li.style.transform = 'none';
+      var dy = before - li.getBoundingClientRect().top;
+      li.style.transform = 'translateY(' + dy + 'px)';
+      startY = y - dy;
+    }
+    function onMove(ev) {
+      li.style.transform = 'translateY(' + (ev.clientY - startY) + 'px)';
+      var p = sib(false), n = sib(true);
+      if (p && center(li) < center(p)) swap(function () { ul.insertBefore(li, p); }, ev.clientY);
+      else if (n && center(li) > center(n)) swap(function () { ul.insertBefore(li, n.nextSibling); }, ev.clientY);
+    }
+    function end() {
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      li.classList.remove('dragging');
+      li.style.transform = '';
+      var ids = [].map.call(ul.querySelectorAll('li[data-id]'), function (x) { return x.getAttribute('data-id'); });
+      commitOrder(ids);
+    }
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
+
   function renderItem(t, idx, shown) {
     var c = getCat(t.category) || cats[0];
 
@@ -420,12 +481,14 @@ li.edit select{flex:1}
     var kids = [cb, txt, el('span', { class: 'badge', text: c.name })];
 
     if (reorderMode) {
-      var prev = shown[idx - 1], next = shown[idx + 1];
-      var up = { class: 'icon mv', text: '▲', 'aria-label': '위로', 'data-mv': t.id + ':-1', onclick: function () { move(t.id, -1); } };
-      var dn = { class: 'icon mv', text: '▼', 'aria-label': '아래로', 'data-mv': t.id + ':1', onclick: function () { move(t.id, 1); } };
-      if (!prev || prev.done !== t.done) up.disabled = '';
-      if (!next || next.done !== t.done) dn.disabled = '';
-      kids.push(el('button', up), el('button', dn));
+      var handle = el('span', { class: 'handle', role: 'button', tabindex: '0', text: '≡', 'data-h': t.id,
+        'aria-label': '끌어서 순서 변경 (키보드는 위/아래 방향키)' });
+      handle.addEventListener('pointerdown', function (e) { startDrag(e, handle.parentNode); });
+      handle.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowUp') { e.preventDefault(); move(t.id, -1); }
+        if (e.key === 'ArrowDown') { e.preventDefault(); move(t.id, 1); }
+      });
+      kids.push(handle);
     } else {
       txt.title = '더블클릭하여 수정';
       txt.addEventListener('dblclick', function () { editingId = t.id; render(); });
@@ -434,7 +497,7 @@ li.edit select{flex:1}
         el('button', { class: 'icon del', text: '✕', 'aria-label': '삭제', title: '삭제', onclick: function () { remove(t.id); } })
       );
     }
-    return el('li', { class: t.done ? 'done' : '', 'data-k': c.k }, kids);
+    return el('li', { class: t.done ? 'done' : '', 'data-k': c.k, 'data-id': t.id, 'data-done': String(t.done) }, kids);
   }
 
   function renderList() {
@@ -457,18 +520,15 @@ li.edit select{flex:1}
     fillSelect($('newCat'), getCat($('newCat').value) ? $('newCat').value : cats[0].id);
     $('catPanel').hidden = $('catToggle').getAttribute('aria-pressed') !== 'true';
     $('orderToggle').setAttribute('aria-pressed', String(reorderMode));
+    $('orderHint').hidden = !reorderMode;
     renderList();
 
     var ei = $('editInput');
     if (ei) { ei.focus(); ei.setSelectionRange(ei.value.length, ei.value.length); }
-    if (focusMv) {
-      var b = document.querySelector('[data-mv="' + focusMv + '"]');
-      if (!b || b.disabled) {
-        var other = document.querySelector('[data-mv="' + focusMv.split(':')[0] + ':' + (focusMv.slice(-2) === '-1' ? '1' : '-1') + '"]');
-        b = other && !other.disabled ? other : null;
-      }
-      if (b) b.focus();
-      focusMv = null;
+    if (focusH) {
+      var hb = document.querySelector('[data-h="' + focusH + '"]');
+      if (hb) hb.focus();
+      focusH = null;
     }
   }
 
