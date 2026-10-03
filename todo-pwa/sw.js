@@ -1,5 +1,5 @@
 // 온라인이면 항상 최신 파일을 받고, 오프라인이면 저장해 둔 파일을 사용해요.
-var CACHE = 'todo-app-cache-v3';
+var CACHE = 'todo-app-cache-v4';
 var FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', function (e) {
@@ -24,6 +24,16 @@ self.addEventListener('fetch', function (e) {
       return res;
     }).catch(function () {
       return caches.match(e.request).then(function (hit) { return hit || caches.match('./index.html'); });
+    })
+  );
+});
+
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+      if (list.length) return list[0].focus();
+      return self.clients.openWindow('./');
     })
   );
 });

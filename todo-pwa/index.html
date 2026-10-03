@@ -72,7 +72,7 @@ h1{font-size:26px;margin:0;letter-spacing:-.02em}
 .cat .bar>i{background:var(--col)}
 
 .add{display:flex;gap:8px;margin:16px 0 12px}
-input[type=text],select{
+input[type=text],input[type=time],select{
   font:inherit;color:var(--ink);background:var(--card);
   border:1px solid var(--line);border-radius:10px;padding:11px 12px;min-height:44px;
 }
@@ -101,6 +101,10 @@ button{font:inherit;cursor:pointer;border-radius:10px;min-height:44px;border:1px
 .chip button{background:transparent;color:inherit;min-height:32px;width:32px;padding:0}
 .hint{color:var(--sub);font-size:12px;margin:8px 0 0}
 .panel .actions{display:flex;gap:8px;flex-wrap:wrap}
+.days{display:flex;gap:6px;margin-bottom:14px}
+.days .tab{flex:1;padding:0 8px;min-height:44px}
+li.picked{border-color:var(--bar);background:var(--barbg)}
+.panel .row label{align-self:center;font-size:14px;flex:none}
 .ghost{background:transparent;color:var(--ink);border:1px solid var(--line);padding:0 18px;font-weight:700}
 .danger{background:transparent;color:var(--danger);border:1px solid var(--danger);padding:0 14px;font-weight:700}
 .danger:disabled{opacity:.35;cursor:default}
@@ -149,6 +153,8 @@ li.edit select{flex:1}
 
   <div class="notice" id="notice" hidden>이 브라우저에서는 저장이 막혀 있어요. 창을 닫으면 할 일이 사라질 수 있어요.</div>
 
+  <div class="days" id="days"></div>
+
   <section class="progress" aria-label="진행률">
     <div class="big"><span class="pct" id="pct">0%</span><span class="cnt" id="cnt">0 / 0 완료</span></div>
     <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="bar"><i></i></div>
@@ -166,6 +172,8 @@ li.edit select{flex:1}
     <button class="tool" id="catToggle" aria-pressed="false">⚙ 분류 관리</button>
     <button class="tool" id="orderToggle" aria-pressed="false">↕ 순서 변경</button>
     <button class="tool" id="bulkToggle" aria-pressed="false">🗑 일괄 삭제</button>
+    <button class="tool" id="postponeToggle" aria-pressed="false">⏭ 내일로 미루기</button>
+    <button class="tool" id="notifyToggle" aria-pressed="false">🔔 알림</button>
     <button class="tool" id="dataToggle" aria-pressed="false">💾 백업</button>
   </div>
 
@@ -186,6 +194,28 @@ li.edit select{flex:1}
       <input type="file" id="fileInput" accept=".json,application/json" hidden>
     </div>
     <p class="hint">내보내기는 모든 할 일과 분류를 파일(JSON)로 저장해요. 불러오기는 그 파일로 현재 데이터를 교체해요. 폰을 바꾸거나 앱을 다시 설치하기 전에 내보내 두면 안전해요.</p>
+  </section>
+
+  <section class="panel" id="pickBar" hidden>
+    <h2 id="pickInfo"></h2>
+    <div class="actions">
+      <button class="primary" id="pickDone">완료</button>
+      <button class="ghost" id="pickAll">보이는 미완료 전체 선택</button>
+      <button class="ghost" id="pickCancel">취소</button>
+    </div>
+  </section>
+
+  <section class="panel" id="notifyPanel" hidden>
+    <h2>알림</h2>
+    <div class="row">
+      <label for="notifyTime">알림 시각</label>
+      <input type="time" id="notifyTime" value="08:00">
+      <button class="ghost" id="notifyBtn"></button>
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="ghost" id="icsBtn"></button>
+    </div>
+    <p class="hint">앱 알림은 <b>앱이 열려 있거나 백그라운드에 살아 있을 때</b>, 그날 알림 시각 이후 처음 한 번 울려요. 앱을 완전히 종료해도 확실히 받으려면 「캘린더 알림 파일」을 받아 폰 캘린더에 등록하세요. 보고 있는 날짜의 남은 할 일이 알림 시각 일정으로 만들어져요.</p>
   </section>
 
   <p class="hint" id="orderHint" hidden style="margin:0 0 10px">≡ 를 잡고 위아래로 끌어서 순서를 바꿔요.</p>
@@ -231,6 +261,12 @@ li.edit select{flex:1}
   var focusH = null;
   var bulkOpen = false;
   var dataOpen = false;
+  var dayOffset = 0;          // -1 어제, 0 오늘, 1 내일
+  var postponeMode = false;
+  var picked = {};
+  var notifyOpen = false;
+  var NOTIFY_KEY = 'todo-app-notify-v1';
+  var notify = { on: false, time: '08:00', last: '' };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -248,6 +284,7 @@ li.edit select{flex:1}
       var data = raw ? JSON.parse(raw) : [];
       todos = Array.isArray(data) ? data.filter(function (t) { return t && typeof t.text === 'string'; }) : [];
       todos.forEach(function (t) { if (!getCat(t.category)) t.category = 'personal'; });
+      todos.forEach(function (t) { if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date)) t.date = today(); });
     } catch (e) {
       todos = [];
       storageOk = false;
@@ -285,7 +322,7 @@ li.edit select{flex:1}
     var input = $('newText');
     var text = input.value.trim();
     if (!text) { input.focus(); return; }
-    todos.unshift({ id: uid(), text: text, category: $('newCat').value, done: false, createdAt: Date.now() });
+    todos.unshift({ id: uid(), text: text, category: $('newCat').value, done: false, date: viewDate(), createdAt: Date.now() });
     input.value = '';
     input.focus();
     save(); render();
@@ -330,27 +367,144 @@ li.edit select{flex:1}
 
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
 
-  function exportData() {
-    var payload = JSON.stringify({ app: 'todo-app', version: 1, exportedAt: new Date().toISOString(), categories: cats, todos: todos }, null, 2);
-    var d = new Date();
-    var name = 'todo-backup-' + d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '.json';
+  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function today() { return ymd(new Date()); }
+  function shiftDay(s, n) { var p = s.split('-'); return ymd(new Date(+p[0], +p[1] - 1, +p[2] + n)); }
+  function viewDate() { return shiftDay(today(), dayOffset); }
+  function dayLabel(s) {
+    var p = s.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
+  }
+  function dayTodos() { var v = viewDate(); return todos.filter(function (t) { return t.date === v; }); }
+
+  function saveFile(name, payload, mime, title) {
     var file = null;
-    try { file = new File([payload], name, { type: 'application/json' }); } catch (e) {}
+    try { file = new File([payload], name, { type: mime }); } catch (e) {}
     var touch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
     if (touch && file && navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: '오늘할일 백업' }).catch(function (err) {
+      navigator.share({ files: [file], title: title }).catch(function (err) {
         if (!err || err.name !== 'AbortError') download();
       });
       return;
     }
     download();
     function download() {
-      var url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+      var url = URL.createObjectURL(new Blob([payload], { type: mime }));
       var a = el('a', { href: url, download: name });
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+  }
+
+  function exportData() {
+    var payload = JSON.stringify({ app: 'todo-app', version: 1, exportedAt: new Date().toISOString(), categories: cats, todos: todos }, null, 2);
+    saveFile('todo-backup-' + today() + '.json', payload, 'application/json', '오늘할일 백업');
+  }
+
+  function exportIcs() {
+    var date = viewDate();
+    var items = dayTodos().filter(function (t) { return !t.done; });
+    if (!items.length) { alert(dayLabel(date) + '에는 남은 할 일이 없어요.'); return; }
+    var p = date.split('-'), hm = notify.time.split(':');
+    var s = new Date(+p[0], +p[1] - 1, +p[2], +hm[0], +hm[1]);
+    var e = new Date(s.getTime() + 30 * 60000);
+    function stamp(d) { return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + 'T' + pad(d.getHours()) + pad(d.getMinutes()) + '00'; }
+    function esc(x) { return String(x).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n'); }
+    var desc = items.map(function (t) { return '- ' + t.text; }).join('\n');
+    var lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//todo-app//KO', 'BEGIN:VEVENT',
+      'UID:todo-' + date + '-' + Date.now() + '@todo-app',
+      'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''),
+      'DTSTART:' + stamp(s), 'DTEND:' + stamp(e),
+      'SUMMARY:' + esc('오늘할일 ' + items.length + '개'), 'DESCRIPTION:' + esc(desc),
+      'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc('할 일을 확인하세요'), 'TRIGGER:PT0M', 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR'];
+    saveFile('todo-' + date + '.ics', lines.join('\r\n'), 'text/calendar', '할 일 알림');
+  }
+
+  /* ----- 날짜 이동 / 미루기 ----- */
+  function setDay(n) {
+    dayOffset = n;
+    editingId = null;
+    postponeMode = false;
+    picked = {};
+    render();
+  }
+
+  function togglePostpone() {
+    if (dayOffset > 0) return;
+    postponeMode = !postponeMode;
+    picked = {};
+    reorderMode = false;
+    editingId = null;
+    render();
+  }
+
+  function pickAll() {
+    getShown().forEach(function (t) { if (!t.done) picked[t.id] = true; });
+    render();
+  }
+
+  function confirmPostpone() {
+    var ids = Object.keys(picked);
+    if (!ids.length) { alert('옮길 할 일을 먼저 선택해 주세요.'); return; }
+    var snapshot = todos.map(function (t) { return Object.assign({}, t); });
+    var target = shiftDay(viewDate(), 1);
+    todos.forEach(function (t) { if (picked[t.id]) t.date = target; });
+    lastDeleted = { restore: { todos: snapshot, cats: cats } };
+    postponeMode = false;
+    picked = {};
+    save(); render();
+    showToast(ids.length + '개를 ' + (dayOffset < 0 ? '오늘' : '내일') + '로 옮겼어요');
+  }
+
+  /* ----- 알림 ----- */
+  function loadNotify() {
+    try {
+      var n = JSON.parse(localStorage.getItem(NOTIFY_KEY) || 'null');
+      if (n && typeof n === 'object') {
+        notify.on = !!n.on;
+        notify.time = /^\d{2}:\d{2}$/.test(n.time) ? n.time : '08:00';
+        notify.last = typeof n.last === 'string' ? n.last : '';
+      }
+    } catch (e) {}
+  }
+  function saveNotify() { try { localStorage.setItem(NOTIFY_KEY, JSON.stringify(notify)); } catch (e) {} }
+
+  function toggleNotify() {
+    if (notify.on) { notify.on = false; saveNotify(); render(); return; }
+    if (!('Notification' in window)) {
+      alert('이 브라우저는 앱 알림을 지원하지 않아요. 캘린더 알림 파일을 이용해 주세요.');
+      return;
+    }
+    Notification.requestPermission().then(function (perm) {
+      if (perm === 'granted') { notify.on = true; saveNotify(); checkNotify(); }
+      else alert('알림 권한이 꺼져 있어요. 브라우저나 폰 설정에서 이 사이트의 알림을 허용해 주세요.');
+      render();
+    });
+  }
+
+  function checkNotify() {
+    if (!notify.on || !('Notification' in window) || Notification.permission !== 'granted') return;
+    var now = new Date(), t0 = today();
+    if (notify.last === t0) return;
+    if (pad(now.getHours()) + ':' + pad(now.getMinutes()) < notify.time) return;
+    var pending = todos.filter(function (t) { return t.date === t0 && !t.done; });
+    notify.last = t0;
+    saveNotify();
+    if (!pending.length) return;
+    var title = '오늘 할 일 ' + pending.length + '개';
+    var opts = {
+      body: pending.slice(0, 3).map(function (t) { return '• ' + t.text; }).join('\n') +
+        (pending.length > 3 ? '\n외 ' + (pending.length - 3) + '개' : ''),
+      icon: 'icon-192.png', tag: 'todo-daily'
+    };
+    function fallback() { try { new Notification(title, opts); } catch (e) {} }
+    if (location.protocol.indexOf('http') === 0 && navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then(function (r) { r.showNotification(title, opts); }).catch(fallback);
+    } else {
+      fallback();
     }
   }
 
@@ -383,6 +537,7 @@ li.edit select{flex:1}
         seen[id] = true;
         var cat = newCats.some(function (c) { return c.id === t.category; }) ? t.category : 'personal';
         newTodos.push({ id: id, text: t.text.trim().slice(0, 200), category: cat, done: !!t.done,
+          date: /^\d{4}-\d{2}-\d{2}$/.test(t.date) ? t.date : today(),
           createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now() });
       });
       var msg = '백업 파일에서 할 일 ' + newTodos.length + '개와 직접 만든 분류 ' + (newCats.length - DEFAULT_CATS.length) +
@@ -400,7 +555,8 @@ li.edit select{flex:1}
   }
 
   function scopeItems() {
-    return todos.filter(function (t) { return filter === 'all' || t.category === filter; });
+    var v = viewDate();
+    return todos.filter(function (t) { return t.date === v && (filter === 'all' || t.category === filter); });
   }
   function scopeName() {
     var c = getCat(filter);
@@ -420,7 +576,8 @@ li.edit select{flex:1}
   }
 
   function getShown() {
-    var s = todos.filter(function (t) { return filter === 'all' || t.category === filter; });
+    var v = viewDate();
+    var s = todos.filter(function (t) { return t.date === v && (filter === 'all' || t.category === filter); });
     return s.filter(function (t) { return !t.done; }).concat(s.filter(function (t) { return t.done; }));
   }
 
@@ -481,8 +638,9 @@ li.edit select{flex:1}
   }
 
   function renderProgress() {
-    var total = todos.length;
-    var done = todos.filter(function (t) { return t.done; }).length;
+    var day = dayTodos();
+    var total = day.length;
+    var done = day.filter(function (t) { return t.done; }).length;
     var p = pct(done, total);
     $('pct').textContent = p + '%';
     $('cnt').textContent = done + ' / ' + total + ' 완료';
@@ -492,7 +650,7 @@ li.edit select{flex:1}
     var box = $('cats');
     box.textContent = '';
     cats.forEach(function (c) {
-      var list = todos.filter(function (t) { return t.category === c.id; });
+      var list = day.filter(function (t) { return t.category === c.id; });
       var d = list.filter(function (t) { return t.done; }).length;
       var bar = el('div', { class: 'bar' }, [el('i')]);
       bar.firstChild.style.width = pct(d, list.length) + '%';
@@ -500,6 +658,20 @@ li.edit select{flex:1}
         el('div', { class: 'name' }, [el('b', { text: c.name }), el('span', { text: d + '/' + list.length })]),
         bar
       ]));
+    });
+  }
+
+  function renderDays() {
+    var box = $('days');
+    box.textContent = '';
+    var t0 = today();
+    [[-1, '어제'], [0, '오늘'], [1, '내일']].forEach(function (p) {
+      var d = shiftDay(t0, p[0]);
+      var n = todos.filter(function (t) { return t.date === d && !t.done; }).length;
+      box.appendChild(el('button', {
+        class: 'tab', text: p[1] + (n ? ' · ' + n : ''), 'aria-pressed': String(dayOffset === p[0]),
+        onclick: function () { setDay(p[0]); }
+      }));
     });
   }
 
@@ -599,8 +771,18 @@ li.edit select{flex:1}
       ]);
     }
 
-    var cb = el('input', { type: 'checkbox', 'aria-label': '완료', onchange: function () { toggle(t.id); } });
-    cb.checked = t.done;
+    var cb;
+    if (postponeMode) {
+      cb = el('input', { type: 'checkbox', 'aria-label': '옮길 할 일 선택', onchange: function () {
+        if (picked[t.id]) delete picked[t.id]; else picked[t.id] = true;
+        render();
+      } });
+      cb.checked = !!picked[t.id];
+      if (t.done) cb.disabled = true;
+    } else {
+      cb = el('input', { type: 'checkbox', 'aria-label': '완료', onchange: function () { toggle(t.id); } });
+      cb.checked = t.done;
+    }
     var txt = el('span', { class: 'txt', text: t.text });
     var kids = [cb, txt, el('span', { class: 'badge', text: c.name })];
 
@@ -613,6 +795,8 @@ li.edit select{flex:1}
         if (e.key === 'ArrowDown') { e.preventDefault(); move(t.id, 1); }
       });
       kids.push(handle);
+    } else if (postponeMode) {
+      /* 선택 모드: 수정·삭제 버튼 숨김 */
     } else {
       txt.title = '더블클릭하여 수정';
       txt.addEventListener('dblclick', function () { editingId = t.id; render(); });
@@ -621,7 +805,7 @@ li.edit select{flex:1}
         el('button', { class: 'icon del', text: '✕', 'aria-label': '삭제', title: '삭제', onclick: function () { remove(t.id); } })
       );
     }
-    return el('li', { class: t.done ? 'done' : '', 'data-k': c.k, 'data-id': t.id, 'data-done': String(t.done) }, kids);
+    return el('li', { class: (t.done ? 'done' : '') + (picked[t.id] ? ' picked' : ''), 'data-k': c.k, 'data-id': t.id, 'data-done': String(t.done) }, kids);
   }
 
   function renderList() {
@@ -630,7 +814,7 @@ li.edit select{flex:1}
     ul.className = reorderMode ? 'reorder' : '';
     var shown = getShown();
     if (!shown.length) {
-      var msg = todos.length ? '이 분류에는 할 일이 없어요.' : '아직 할 일이 없어요. 첫 할 일을 추가해보세요.';
+      var msg = dayTodos().length ? '이 분류에는 할 일이 없어요.' : (dayOffset === 0 ? '아직 할 일이 없어요. 첫 할 일을 추가해보세요.' : '이 날은 할 일이 없어요.');
       ul.appendChild(el('li', { class: 'empty', text: msg }));
       return;
     }
@@ -644,6 +828,20 @@ li.edit select{flex:1}
     fillSelect($('newCat'), getCat($('newCat').value) ? $('newCat').value : cats[0].id);
     $('catPanel').hidden = $('catToggle').getAttribute('aria-pressed') !== 'true';
     $('orderToggle').setAttribute('aria-pressed', String(reorderMode));
+    renderDays();
+    $('date').textContent = dayLabel(viewDate());
+    $('newText').placeholder = dayOffset > 0 ? '내일 할 일을 미리 입력하세요' : '할 일을 입력하세요';
+    var pt = $('postponeToggle');
+    pt.hidden = dayOffset > 0;
+    pt.textContent = dayOffset < 0 ? '⏭ 오늘로 옮기기' : '⏭ 내일로 미루기';
+    pt.setAttribute('aria-pressed', String(postponeMode));
+    $('pickBar').hidden = !postponeMode;
+    $('pickInfo').textContent = '옮길 할 일을 선택하세요 · ' + Object.keys(picked).length + '개 선택';
+    $('notifyPanel').hidden = !notifyOpen;
+    $('notifyToggle').setAttribute('aria-pressed', String(notifyOpen));
+    $('notifyBtn').textContent = notify.on ? '🔔 알림 끄기' : '🔔 알림 켜기';
+    $('notifyTime').value = notify.time;
+    $('icsBtn').textContent = '📅 ' + dayLabel(viewDate()) + ' 캘린더 알림 파일 받기';
     var sc = scopeItems();
     var nd = sc.filter(function (t) { return t.done; }).length;
     $('bulkPanel').hidden = !bulkOpen;
@@ -681,6 +879,8 @@ li.edit select{flex:1}
   });
   $('orderToggle').addEventListener('click', function () {
     reorderMode = !reorderMode;
+    postponeMode = false;
+    picked = {};
     editingId = null;
     render();
   });
@@ -698,9 +898,31 @@ li.edit select{flex:1}
     this.value = '';
   });
 
+  $('postponeToggle').addEventListener('click', togglePostpone);
+  $('pickDone').addEventListener('click', confirmPostpone);
+  $('pickAll').addEventListener('click', pickAll);
+  $('pickCancel').addEventListener('click', togglePostpone);
+  $('notifyToggle').addEventListener('click', function () { notifyOpen = !notifyOpen; render(); });
+  $('notifyBtn').addEventListener('click', toggleNotify);
+  $('notifyTime').addEventListener('change', function () {
+    if (!this.value) return;
+    notify.time = this.value;
+    notify.last = '';
+    saveNotify();
+    checkNotify();
+    render();
+  });
+  $('icsBtn').addEventListener('click', exportIcs);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { checkNotify(); render(); }
+  });
+
   load();
+  loadNotify();
   $('notice').hidden = storageOk;
   render();
+  checkNotify();
+  setInterval(checkNotify, 60000);
 })();
 </script>
 <script>
