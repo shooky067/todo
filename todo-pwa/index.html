@@ -86,7 +86,7 @@ button{font:inherit;cursor:pointer;border-radius:10px;min-height:44px;border:1px
 .tabs{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
 .tab{background:transparent;border:1px solid var(--line);color:var(--sub);padding:0 14px;min-height:40px;border-radius:99px}
 .tab[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink);font-weight:700}
-.tools{display:flex;gap:6px;margin-bottom:12px}
+.tools{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
 .tool{background:transparent;color:var(--sub);border:1px solid var(--line);min-height:36px;padding:0 12px;font-size:13px}
 .tool[aria-pressed=true]{background:var(--bar);color:#fff;border-color:var(--bar);font-weight:700}
 @media (prefers-color-scheme:dark){.tool[aria-pressed=true]{color:#10141d}}
@@ -101,6 +101,7 @@ button{font:inherit;cursor:pointer;border-radius:10px;min-height:44px;border:1px
 .chip button{background:transparent;color:inherit;min-height:32px;width:32px;padding:0}
 .hint{color:var(--sub);font-size:12px;margin:8px 0 0}
 .panel .actions{display:flex;gap:8px;flex-wrap:wrap}
+.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);padding:0 18px;font-weight:700}
 .danger{background:transparent;color:var(--danger);border:1px solid var(--danger);padding:0 14px;font-weight:700}
 .danger:disabled{opacity:.35;cursor:default}
 
@@ -165,6 +166,7 @@ li.edit select{flex:1}
     <button class="tool" id="catToggle" aria-pressed="false">⚙ 분류 관리</button>
     <button class="tool" id="orderToggle" aria-pressed="false">↕ 순서 변경</button>
     <button class="tool" id="bulkToggle" aria-pressed="false">🗑 일괄 삭제</button>
+    <button class="tool" id="dataToggle" aria-pressed="false">💾 백업</button>
   </div>
 
   <section class="panel" id="bulkPanel" hidden>
@@ -174,6 +176,16 @@ li.edit select{flex:1}
       <button class="danger" id="delAll"></button>
     </div>
     <p class="hint">현재 선택된 탭(전체 또는 분류)의 할 일만 삭제돼요. 삭제 직후 5초 안에는 실행 취소할 수 있어요.</p>
+  </section>
+
+  <section class="panel" id="dataPanel" hidden>
+    <h2>데이터 백업</h2>
+    <div class="actions">
+      <button class="primary" id="exportBtn">⬇ 내보내기</button>
+      <button class="ghost" id="importBtn">⬆ 불러오기</button>
+      <input type="file" id="fileInput" accept=".json,application/json" hidden>
+    </div>
+    <p class="hint">내보내기는 모든 할 일과 분류를 파일(JSON)로 저장해요. 불러오기는 그 파일로 현재 데이터를 교체해요. 폰을 바꾸거나 앱을 다시 설치하기 전에 내보내 두면 안전해요.</p>
   </section>
 
   <p class="hint" id="orderHint" hidden style="margin:0 0 10px">≡ 를 잡고 위아래로 끌어서 순서를 바꿔요.</p>
@@ -218,6 +230,7 @@ li.edit select{flex:1}
   var storageOk = true;
   var focusH = null;
   var bulkOpen = false;
+  var dataOpen = false;
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -295,7 +308,13 @@ li.edit select{flex:1}
 
   function undo() {
     if (!lastDeleted) return;
-    lastDeleted.list.forEach(function (x) { todos.splice(Math.min(x.index, todos.length), 0, x.item); });
+    if (lastDeleted.restore) {
+      todos = lastDeleted.restore.todos;
+      cats = lastDeleted.restore.cats;
+      if (filter !== 'all' && !getCat(filter)) filter = 'all';
+    } else {
+      lastDeleted.list.forEach(function (x) { todos.splice(Math.min(x.index, todos.length), 0, x.item); });
+    }
     lastDeleted = null;
     hideToast();
     save(); render();
@@ -307,6 +326,77 @@ li.edit select{flex:1}
     todos.forEach(function (t) { if (t.id === id) { t.text = text; t.category = category; } });
     editingId = null;
     save(); render();
+  }
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function exportData() {
+    var payload = JSON.stringify({ app: 'todo-app', version: 1, exportedAt: new Date().toISOString(), categories: cats, todos: todos }, null, 2);
+    var d = new Date();
+    var name = 'todo-backup-' + d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '.json';
+    var file = null;
+    try { file = new File([payload], name, { type: 'application/json' }); } catch (e) {}
+    var touch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    if (touch && file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: '오늘할일 백업' }).catch(function (err) {
+        if (!err || err.name !== 'AbortError') download();
+      });
+      return;
+    }
+    download();
+    function download() {
+      var url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+      var a = el('a', { href: url, download: name });
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+  }
+
+  function importData(file) {
+    var reader = new FileReader();
+    reader.onerror = function () { alert('파일을 읽지 못했어요.'); };
+    reader.onload = function () {
+      var data;
+      try { data = JSON.parse(reader.result); } catch (e) {
+        alert('파일을 읽을 수 없어요. 내보내기로 만든 JSON 파일이 맞는지 확인해 주세요.');
+        return;
+      }
+      if (!data || data.app !== 'todo-app' || !Array.isArray(data.todos)) {
+        alert('이 앱에서 내보낸 백업 파일이 아니에요.');
+        return;
+      }
+      var newCats = DEFAULT_CATS.slice();
+      (Array.isArray(data.categories) ? data.categories : []).forEach(function (x) {
+        if (!x || x.fixed || typeof x.id !== 'string' || typeof x.name !== 'string') return;
+        var name = x.name.trim().slice(0, 10);
+        if (!name || newCats.length >= MAX_CATS) return;
+        if (newCats.some(function (c) { return c.id === x.id; })) return;
+        newCats.push({ id: x.id, name: name, k: EXTRA_COLORS.indexOf(x.k) >= 0 ? x.k : 'c3' });
+      });
+      var seen = {};
+      var newTodos = [];
+      data.todos.forEach(function (t) {
+        if (!t || typeof t.text !== 'string' || !t.text.trim()) return;
+        var id = typeof t.id === 'string' && !seen[t.id] ? t.id : uid();
+        seen[id] = true;
+        var cat = newCats.some(function (c) { return c.id === t.category; }) ? t.category : 'personal';
+        newTodos.push({ id: id, text: t.text.trim().slice(0, 200), category: cat, done: !!t.done,
+          createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now() });
+      });
+      var msg = '백업 파일에서 할 일 ' + newTodos.length + '개와 직접 만든 분류 ' + (newCats.length - DEFAULT_CATS.length) +
+        '개를 불러와요.\n현재 데이터는 모두 교체돼요. 계속할까요?';
+      if (!confirm(msg)) return;
+      lastDeleted = { restore: { todos: todos, cats: cats } };
+      todos = newTodos;
+      cats = newCats;
+      filter = 'all';
+      editingId = null;
+      save(); render();
+      showToast('할 일 ' + newTodos.length + '개를 불러왔어요');
+    };
+    reader.readAsText(file);
   }
 
   function scopeItems() {
@@ -563,6 +653,8 @@ li.edit select{flex:1}
     $('delDone').disabled = !nd;
     $('delAll').textContent = scopeName() + ' 할 일 모두 삭제 (' + sc.length + ')';
     $('delAll').disabled = !sc.length;
+    $('dataPanel').hidden = !dataOpen;
+    $('dataToggle').setAttribute('aria-pressed', String(dataOpen));
     $('orderHint').hidden = !reorderMode;
     renderList();
 
@@ -596,6 +688,15 @@ li.edit select{flex:1}
   $('bulkToggle').addEventListener('click', function () { bulkOpen = !bulkOpen; render(); });
   $('delDone').addEventListener('click', function () { bulkDelete(true); });
   $('delAll').addEventListener('click', function () { bulkDelete(false); });
+
+  $('dataToggle').addEventListener('click', function () { dataOpen = !dataOpen; render(); });
+  $('exportBtn').addEventListener('click', exportData);
+  $('importBtn').addEventListener('click', function () { $('fileInput').click(); });
+  $('fileInput').addEventListener('change', function () {
+    var f = this.files && this.files[0];
+    if (f) importData(f);
+    this.value = '';
+  });
 
   load();
   $('notice').hidden = storageOk;
