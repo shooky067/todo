@@ -317,6 +317,8 @@ li.edit input[type=text]{flex:1;min-width:0}
     var ul = $('list');
     ul.textContent = '';
     var shown = todos.filter(function (t) { return filter === 'all' || t.category === filter; });
+    // 완료된 항목은 아래로 (각 그룹 안의 순서는 유지)
+    shown = shown.filter(function (t) { return !t.done; }).concat(shown.filter(function (t) { return t.done; }));
     if (!shown.length) {
       var msg = todos.length ? '이 카테고리에는 할 일이 없어요.' : '아직 할 일이 없어요. 첫 할 일을 추가해보세요.';
       ul.appendChild(el('li', { class: 'empty', text: msg, style: 'display:block' }));

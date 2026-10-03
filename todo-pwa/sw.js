@@ -1,5 +1,5 @@
 // 앱 파일을 바꾸면 CACHE 숫자를 올려야 새 버전이 반영돼요.
-var CACHE = 'todo-app-cache-v1';
+var CACHE = 'todo-app-cache-v2';
 var FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', function (e) {
