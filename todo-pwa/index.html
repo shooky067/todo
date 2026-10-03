@@ -100,6 +100,9 @@ button{font:inherit;cursor:pointer;border-radius:10px;min-height:44px;border:1px
 .chip.fixed{padding-right:12px}
 .chip button{background:transparent;color:inherit;min-height:32px;width:32px;padding:0}
 .hint{color:var(--sub);font-size:12px;margin:8px 0 0}
+.panel .actions{display:flex;gap:8px;flex-wrap:wrap}
+.danger{background:transparent;color:var(--danger);border:1px solid var(--danger);padding:0 14px;font-weight:700}
+.danger:disabled{opacity:.35;cursor:default}
 
 ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
 li{
@@ -161,7 +164,17 @@ li.edit select{flex:1}
   <div class="tools">
     <button class="tool" id="catToggle" aria-pressed="false">⚙ 분류 관리</button>
     <button class="tool" id="orderToggle" aria-pressed="false">↕ 순서 변경</button>
+    <button class="tool" id="bulkToggle" aria-pressed="false">🗑 일괄 삭제</button>
   </div>
+
+  <section class="panel" id="bulkPanel" hidden>
+    <h2 id="bulkTitle">일괄 삭제</h2>
+    <div class="actions">
+      <button class="danger" id="delDone"></button>
+      <button class="danger" id="delAll"></button>
+    </div>
+    <p class="hint">현재 선택된 탭(전체 또는 분류)의 할 일만 삭제돼요. 삭제 직후 5초 안에는 실행 취소할 수 있어요.</p>
+  </section>
 
   <p class="hint" id="orderHint" hidden style="margin:0 0 10px">≡ 를 잡고 위아래로 끌어서 순서를 바꿔요.</p>
 
@@ -204,6 +217,7 @@ li.edit select{flex:1}
   var toastTimer = null;
   var storageOk = true;
   var focusH = null;
+  var bulkOpen = false;
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -272,7 +286,7 @@ li.edit select{flex:1}
   function remove(id) {
     var i = todos.findIndex(function (t) { return t.id === id; });
     if (i < 0) return;
-    lastDeleted = { item: todos[i], index: i };
+    lastDeleted = { list: [{ item: todos[i], index: i }] };
     todos.splice(i, 1);
     if (editingId === id) editingId = null;
     save(); render();
@@ -281,7 +295,7 @@ li.edit select{flex:1}
 
   function undo() {
     if (!lastDeleted) return;
-    todos.splice(Math.min(lastDeleted.index, todos.length), 0, lastDeleted.item);
+    lastDeleted.list.forEach(function (x) { todos.splice(Math.min(x.index, todos.length), 0, x.item); });
     lastDeleted = null;
     hideToast();
     save(); render();
@@ -293,6 +307,26 @@ li.edit select{flex:1}
     todos.forEach(function (t) { if (t.id === id) { t.text = text; t.category = category; } });
     editingId = null;
     save(); render();
+  }
+
+  function scopeItems() {
+    return todos.filter(function (t) { return filter === 'all' || t.category === filter; });
+  }
+  function scopeName() {
+    var c = getCat(filter);
+    return filter === 'all' || !c ? '전체' : c.name;
+  }
+
+  function bulkDelete(onlyDone) {
+    var items = scopeItems().filter(function (t) { return !onlyDone || t.done; });
+    if (!items.length) return;
+    var where = filter === 'all' ? '' : "'" + scopeName() + "' 분류의 ";
+    if (!confirm(where + (onlyDone ? '완료된 할 일 ' : '할 일 ') + items.length + '개를 삭제할까요?')) return;
+    lastDeleted = { list: items.map(function (t) { return { item: t, index: todos.indexOf(t) }; }) };
+    todos = todos.filter(function (t) { return items.indexOf(t) < 0; });
+    editingId = null;
+    save(); render();
+    showToast(items.length + '개를 삭제했어요');
   }
 
   function getShown() {
@@ -520,6 +554,15 @@ li.edit select{flex:1}
     fillSelect($('newCat'), getCat($('newCat').value) ? $('newCat').value : cats[0].id);
     $('catPanel').hidden = $('catToggle').getAttribute('aria-pressed') !== 'true';
     $('orderToggle').setAttribute('aria-pressed', String(reorderMode));
+    var sc = scopeItems();
+    var nd = sc.filter(function (t) { return t.done; }).length;
+    $('bulkPanel').hidden = !bulkOpen;
+    $('bulkToggle').setAttribute('aria-pressed', String(bulkOpen));
+    $('bulkTitle').textContent = '일괄 삭제 · 현재 보기: ' + scopeName();
+    $('delDone').textContent = '완료된 할 일 삭제 (' + nd + ')';
+    $('delDone').disabled = !nd;
+    $('delAll').textContent = scopeName() + ' 할 일 모두 삭제 (' + sc.length + ')';
+    $('delAll').disabled = !sc.length;
     $('orderHint').hidden = !reorderMode;
     renderList();
 
@@ -549,6 +592,10 @@ li.edit select{flex:1}
     editingId = null;
     render();
   });
+
+  $('bulkToggle').addEventListener('click', function () { bulkOpen = !bulkOpen; render(); });
+  $('delDone').addEventListener('click', function () { bulkDelete(true); });
+  $('delAll').addEventListener('click', function () { bulkDelete(false); });
 
   load();
   $('notice').hidden = storageOk;
